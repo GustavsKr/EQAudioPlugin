@@ -1,0 +1,19 @@
+# Build folders
+out/
+build/
+
+# Visual Studio files
+.vs/
+*.sln
+*.vcxproj
+*.vcxproj.user
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# OS files
+.DS_Store
+Thumbs.db
