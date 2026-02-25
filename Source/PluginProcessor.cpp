@@ -86,9 +86,16 @@ void AudioPluginAudioProcessor::changeProgramName (int index, const juce::String
 //==============================================================================
 void AudioPluginAudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-    // Use this method as the place to do any pre-playback
-    // initialisation that you need..
-    juce::ignoreUnused (sampleRate, samplesPerBlock);
+    spec.sampleRate = sampleRate;
+    spec.maximumBlockSize = samplesPerBlock;
+    spec.numChannels = getTotalNumOutputChannels();
+
+    inputGain.prepare(spec);
+    masterGain.prepare(spec);
+
+    // Set gain to decibels mode (standard for amp sims)
+    inputGain.setRampDurationSeconds(0.05); // Prevents clicks when turning knobs
+    masterGain.setRampDurationSeconds(0.05);
 }
 
 void AudioPluginAudioProcessor::releaseResources()
@@ -121,36 +128,33 @@ bool AudioPluginAudioProcessor::isBusesLayoutSupported (const BusesLayout& layou
   #endif
 }
 
-void AudioPluginAudioProcessor::processBlock (juce::AudioBuffer<float>& buffer,
-                                              juce::MidiBuffer& midiMessages)
+void AudioPluginAudioProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& midiMessages)
 {
-    juce::ignoreUnused (midiMessages);
-
+    juce::ignoreUnused(midiMessages);
     juce::ScopedNoDenormals noDenormals;
-    auto totalNumInputChannels  = getTotalNumInputChannels();
+
+    auto totalNumInputChannels = getTotalNumInputChannels();
     auto totalNumOutputChannels = getTotalNumOutputChannels();
 
-    // In case we have more outputs than inputs, this code clears any output
-    // channels that didn't contain input data, (because these aren't
-    // guaranteed to be empty - they may contain garbage).
-    // This is here to avoid people getting screaming feedback
-    // when they first compile a plugin, but obviously you don't need to keep
-    // this code if your algorithm always overwrites all the output channels.
     for (auto i = totalNumInputChannels; i < totalNumOutputChannels; ++i)
-        buffer.clear (i, 0, buffer.getNumSamples());
+        buffer.clear(i, 0, buffer.getNumSamples());
 
-    // This is the place where you'd normally do the guts of your plugin's
-    // audio processing...
-    // Make sure to reset the state if your inner loop is processing
-    // the samples and the outer loop is handling the channels.
-    // Alternatively, you can process the samples with the channels
-    // interleaved by keeping the same state.
-    for (int channel = 0; channel < totalNumInputChannels; ++channel)
-    {
-        auto* channelData = buffer.getWritePointer (channel);
-        juce::ignoreUnused (channelData);
-        // ..do something to the data...
-    }
+    juce::dsp::AudioBlock<float> block(buffer);
+    juce::dsp::ProcessContextReplacing<float> context(block);
+
+    // 1. Apply Input Gain
+    float inputDb = *apvts.getRawParameterValue("INPUT");
+    inputGain.setGainDecibels(inputDb);
+    inputGain.process(context);
+
+    // --- GATE LOGIC WILL GO HERE ---
+    // --- DISTORTION (GAIN) WILL GO HERE ---
+    // --- EQ (BASS, MID, TREBLE) WILL GO HERE ---
+
+    // 2. Apply Final Output
+    float outputDb = *apvts.getRawParameterValue("OUTPUT");
+    masterGain.setGainDecibels(outputDb);
+    masterGain.process(context);
 }
 
 //==============================================================================
@@ -178,6 +182,37 @@ void AudioPluginAudioProcessor::setStateInformation (const void* data, int sizeI
     // You should use this method to restore your parameters from this memory block,
     // whose contents will have been created by the getStateInformation() call.
     juce::ignoreUnused (data, sizeInBytes);
+}
+
+juce::AudioProcessorValueTreeState::ParameterLayout AudioPluginAudioProcessor::createParameterLayout()
+{
+    juce::AudioProcessorValueTreeState::ParameterLayout layout;
+
+    // --- Utility Row (Top) ---
+    // Input: -24 to +24 dB (0 is center)
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("INPUT", 1), "Input", -24.0f, 24.0f, 0.0f));
+
+    // Gate: -100 to 0 dB (Internal threshold)
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("GATE", 1), "Gate", -100.0f, 0.0f, -100.0f));
+
+    // Output: -60 to +12 dB (with skew to put 0dB near the center)
+    juce::NormalisableRange<float> outputRange(-60.0f, 12.0f);
+    outputRange.setSkewForCentre(0.0f);
+    layout.add(std::make_unique<juce::AudioParameterFloat>(
+        juce::ParameterID("OUTPUT", 1), "Output", outputRange, 0.0f));
+
+    // --- Amp Row (Bottom) ---
+    // Standard amp controls usually range 0.0 to 1.0 (or 0 to 10 on the faceplate)
+    layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID("GAIN", 1), "Gain", 0.0f, 1.0f, 0.5f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID("BASS", 1), "Bass", 0.0f, 1.0f, 0.5f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID("MIDDLE", 1), "Middle", 0.0f, 1.0f, 0.5f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID("TREBLE", 1), "Treble", 0.0f, 1.0f, 0.5f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID("PRESENCE", 1), "Presence", 0.0f, 1.0f, 0.5f));
+    layout.add(std::make_unique<juce::AudioParameterFloat>(juce::ParameterID("LEVEL", 1), "Level", 0.0f, 1.0f, 0.5f));
+
+    return layout;
 }
 
 //==============================================================================
